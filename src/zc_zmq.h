@@ -14,7 +14,7 @@ void zc_zmq_will_write(void);
 void zc_zmq_set_verbose(int v);
 
 void zc_zmq_set_type(const char* type);
-void zc_zmq_set_address(const char* address);
+void zc_zmq_add_address(const char* address);
 void zc_zmq_set_delimiter(char d);
 void zc_zmq_set_iterations(int n);
 void zc_zmq_add_option(const char* opt);

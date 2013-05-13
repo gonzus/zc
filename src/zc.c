@@ -57,11 +57,14 @@ int main(int argc, char* argv[])
         }
     }
 
-    if ((argc - optind) != 2) {
+    if ((argc - optind) < 2) {
         zc_zmq_show_usage();
     } else {
-        zc_zmq_set_type(argv[optind+0]);
-        zc_zmq_set_address(argv[optind+1]);
+        int j = optind;
+        zc_zmq_set_type(argv[j++]);
+        while (j < argc) {
+            zc_zmq_add_address(argv[j++]);
+        }
     }
 
     zc_zmq_debug();

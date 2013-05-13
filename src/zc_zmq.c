@@ -33,7 +33,12 @@
 #define OPT_SEPARATOR '='
 
 #define MAX_BUF 1024
-#define MAX_OPT 100
+#define MAX_OPT 50
+#define MAX_ADD 50
+
+typedef struct SockAdd {
+    char ep[MAX_BUF];
+} SockAdd;
 
 typedef struct SockOpt {
     char name[MAX_BUF];
@@ -48,9 +53,12 @@ static int connect_;
 static int read_;
 static int write_;
 static char type_[MAX_BUF];
-static char address_[MAX_BUF];
 static char delimiter_;
 static int iterations_;
+
+static int nadd;
+static SockAdd sadd[MAX_ADD];
+
 static int nopt;
 static SockOpt sopt[MAX_OPT];
 
@@ -87,22 +95,19 @@ void zc_zmq_cleanup(void)
         if (verbose_)
             fprintf(stderr, "Destroyed context\n");
     }
-
-    address_[0] = '\0';
-    type_[0] = '\0';
 }
 
 void zc_zmq_show_usage(void)
 {
-    printf("Usage: %s [-hv0rwbc] [-n num] [-o opt=val] TYPE address\n",
+    printf("Usage: %s [-hv0rwbc] [-n num] [-o opt=val] TYPE address ...\n",
            prog_[0] ? prog_ : DEFAULT_PROGRAM_NAME);
     printf("  -h: show this help\n");
     printf("  -v: verbose output; default is quiet\n");
     printf("  -0: use \\0 as delimiter for reading / writing; default is \\n\n");
     printf("  -r: read from socket\n");
     printf("  -w: write to socket\n");
-    printf("  -b: bind socket to address\n");
-    printf("  -c: connect socket to address\n");
+    printf("  -b: bind socket to address(es)\n");
+    printf("  -c: connect socket to address(es)\n");
     printf("  -n: read / write at most num records; default is infinite\n");
     printf("  -o: set socket option to given value\n"
            "      %s %s %s %s %s\n"
@@ -128,7 +133,8 @@ void zc_zmq_show_usage(void)
            SOCKET_TYPE_REQ,
            SOCKET_TYPE_REP);
 
-    printf("  address: address in ZMQ format ('tcp://127.0.0.1:5000')\n");
+    printf("  address: one or more addresses in ZMQ format\n"
+           "           ('tcp://127.0.0.1:5000', 'inproc://pipe')\n");
 }
 
 void zc_zmq_set_verbose(int v)
@@ -195,9 +201,16 @@ void zc_zmq_set_type(const char* type)
     }
 }
 
-void zc_zmq_set_address(const char* address)
+void zc_zmq_add_address(const char* address)
 {
-    strcpy(address_, address);
+    if (nadd >= MAX_ADD) {
+        printf("Too many addresses (max is %d): [%s]\n",
+               MAX_ADD, address);
+        return;
+    }
+
+    strcpy(sadd[nadd].ep, address);
+    ++nadd;
 }
 
 void zc_zmq_set_delimiter(char d)
@@ -275,6 +288,7 @@ void zc_zmq_run(void)
 {
     int count = 0;
     int subs = 0;
+    int j;
 
     if (! zc_zmq_is_valid())
         return;
@@ -300,17 +314,21 @@ void zc_zmq_run(void)
                     ret);
     }
 
-    if (bind_) {
-        int ret = zmq_bind(sock_, address_);
-        if (verbose_)
-            fprintf(stderr, "Socket bound to [%s]: %d\n",
-                    address_, ret);
-    }
-    if (connect_) {
-        int ret = zmq_connect(sock_, address_);
-        if (verbose_)
-            fprintf(stderr, "Socket connected to [%s]: %d\n",
-                    address_, ret);
+    for (j = 0; j < nadd; ++j) {
+        if (bind_) {
+            int ret = zmq_bind(sock_, sadd[j].ep);
+            if (verbose_)
+                fprintf(stderr, "Socket bound to [%s]: %d\n",
+                        sadd[j].ep, ret);
+            continue;
+        }
+        if (connect_) {
+            int ret = zmq_connect(sock_, sadd[j].ep);
+            if (verbose_)
+                fprintf(stderr, "Socket connected to [%s]: %d\n",
+                        sadd[j].ep, ret);
+            continue;
+        }
     }
 
     if (verbose_) {
@@ -366,11 +384,15 @@ void zc_zmq_debug(void)
     fprintf(stderr, "       will read: %d\n", read_);
     fprintf(stderr, "      will write: %d\n", write_);
     fprintf(stderr, "     socket type: %s (%d)\n", type_, stype_);
-    fprintf(stderr, "  socket address: %s\n", address_);
     fprintf(stderr, "       delimiter: %s (%d)\n",
             zc_zmq_get_delimiter(delimiter_, buf),
             (int) delimiter_);
     fprintf(stderr, "      iterations: %d\n", iterations_);
+
+    for (j = 0; j < nadd; ++j) {
+        fprintf(stderr, "     address #%2d: %s\n",
+                j, sadd[j].ep);
+    }
 
     for (j = 0; j < nopt; ++j) {
         fprintf(stderr, "      option #%2d: %s (%d) = [%s]\n",
@@ -383,7 +405,7 @@ static int zc_zmq_is_valid(void)
     if (stype_ < 0)
         return 0;
 
-    if (address_ == 0)
+    if (nadd <= 0)
         return 0;
 
     if (!bind_ && !connect_)
