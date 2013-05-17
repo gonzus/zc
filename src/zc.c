@@ -69,7 +69,6 @@ int main(int argc, char* argv[])
 
     zc_zmq_debug();
     zc_zmq_run();
-    zc_zmq_cleanup();
 
     return 0;
 }

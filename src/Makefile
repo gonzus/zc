@@ -6,6 +6,7 @@ C_MAIN_FILE = zc.c
 # More C files, each has an associated include file
 C_MORE_FILES = \
 	getopt.c \
+	buffer.c \
 	zc_zmq.c \
 
 # CFLAGS += -Wall -O
@@ -16,15 +17,18 @@ CFLAGS += -Wall -g
 # Everything from here is generic!!! DO NOT EDITH ANYTHING BELOW!
 #####
 
-# Compiler and linker configuration:
-
-ZMQ_DIR = $(HOME)/src/libzmq
+ZMQ_HOME = $(HOME)/src/libzmq
+ZMQ_DLL_DIR = $(ZMQ_HOME)/lib/Win32
 ZMQ_DLL = libzmq_d
 
-CPPFLAGS += -I$(ZMQ_DIR)/include
+#ZMQ_HOME = $(HOME)/src/zeromq2-x/
+#ZMQ_DLL_DIR = $(ZMQ_HOME)/builds/msvc/Debug
+#ZMQ_DLL = libzmq
 
-LDLIBS += $(ZMQ_DIR)/lib/Win32/$(ZMQ_DLL).lib
+# Compiler and linker configuration:
 
+CPPFLAGS += -I$(ZMQ_HOME)/include
+LDLIBS += $(ZMQ_DLL_DIR)/$(ZMQ_DLL).lib
 
 # Expansions into useful variables:
 

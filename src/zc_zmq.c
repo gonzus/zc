@@ -3,6 +3,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <zmq.h>
+#include "buffer.h"
 #include "zc_zmq.h"
 
 #define DEFAULT_PROGRAM_NAME "zc"
@@ -32,27 +33,47 @@
 
 #define OPT_SEPARATOR '='
 
-#define MAX_BUF 1024
+#define MAX_STR 1024
 #define MAX_OPT 50
 #define MAX_ADD 50
 
+#if ZMQ_VERSION < ZMQ_MAKE_VERSION(3, 0, 0)
+
+#define ZMQ_INIT zmq_init(0)
+#define ZMQ_TERM(ctx) zmq_term(ctx)
+#define ZMQ_SEND(s, m, f) zmq_send(s, m, f)
+#define ZMQ_RECV(s, m, f) zmq_recv(s, m, f)
+
+#define ZMQ_SNDHWM ZMQ_HWM
+#define ZMQ_RCVHWM -1
+#define ZMQ_IPV4ONLY -2
+
+#else
+
+#define ZMQ_INIT zmq_ctx_new()
+#define ZMQ_TERM(ctx) zmq_ctx_term(ctx)
+#define ZMQ_SEND(s, m, f) zmq_sendmsg(s, m, f)
+#define ZMQ_RECV(s, m, f) zmq_recvmsg(s, m, f)
+
+#endif
+
 typedef struct SockAdd {
-    char ep[MAX_BUF];
+    char ep[MAX_STR];
 } SockAdd;
 
 typedef struct SockOpt {
-    char name[MAX_BUF];
+    char name[MAX_STR];
     int id;
-    char value[MAX_BUF];
+    char value[MAX_STR];
 } SockOpt;
 
-static char prog_[MAX_BUF];
+static char prog_[MAX_STR];
 static int verbose_;
 static int bind_;
 static int connect_;
 static int read_;
 static int write_;
-static char type_[MAX_BUF];
+static char type_[MAX_STR];
 static char delimiter_;
 static int iterations_;
 
@@ -90,11 +111,13 @@ void zc_zmq_cleanup(void)
             fprintf(stderr, "Closed socket\n");
     }
     if (ctxt_ != 0) {
-        zmq_ctx_term(ctxt_);
+        ZMQ_TERM(ctxt_);
         ctxt_ = 0;
         if (verbose_)
             fprintf(stderr, "Destroyed context\n");
     }
+
+    buffer_clean();
 }
 
 void zc_zmq_show_usage(void)
@@ -225,7 +248,7 @@ void zc_zmq_set_iterations(int n)
 
 void zc_zmq_add_option(const char* opt)
 {
-    char buf[MAX_BUF];
+    char buf[MAX_STR];
     char* p = 0;
     char* q = 0;
 
@@ -250,6 +273,7 @@ void zc_zmq_add_option(const char* opt)
         return;
     }
 
+    int ok = 1;
     if (strcmp(buf, SOCKET_OPTION_SUBSCRIBE) == 0) {
         sopt[nopt].id = ZMQ_SUBSCRIBE;
     } else if (strcmp(buf, SOCKET_OPTION_UNSUBSCRIBE) == 0) {
@@ -273,9 +297,16 @@ void zc_zmq_add_option(const char* opt)
     } else if (strcmp(buf, SOCKET_OPTION_BACKLOG) == 0) {
         sopt[nopt].id = ZMQ_BACKLOG;
     } else if (strcmp(buf, SOCKET_OPTION_IPV4ONLY) == 0) {
-        sopt[nopt].id = ZMQ_IPV4ONLY;
+        if (ZMQ_IPV4ONLY < 0)
+            ok = 0;
+        else
+            sopt[nopt].id = ZMQ_IPV4ONLY;
     } else {
-        printf("Unknown socket option [%s]\n", buf);
+        ok = 0;
+    }
+
+    if (!ok) {
+        printf("Invalid socket option [%s]\n", buf);
         return;
     }
 
@@ -296,7 +327,9 @@ void zc_zmq_run(void)
     if (verbose_)
         fprintf(stderr, "------\n");
 
-    ctxt_ = zmq_ctx_new();
+    buffer_init(verbose_);
+
+    ctxt_ = ZMQ_INIT;
     if (verbose_)
         fprintf(stderr, "Context created: %p\n", ctxt_);
 
@@ -317,16 +350,22 @@ void zc_zmq_run(void)
     for (j = 0; j < nadd; ++j) {
         if (bind_) {
             int ret = zmq_bind(sock_, sadd[j].ep);
-            if (verbose_)
-                fprintf(stderr, "Socket bound to [%s]: %d\n",
-                        sadd[j].ep, ret);
+            if (verbose_) {
+                fprintf(stderr, "Socket bound to [%s]: %d", sadd[j].ep, ret);
+                if (ret < 0)
+                    fprintf(stderr, " (%d)", errno);
+                fprintf(stderr, "\n");
+            }
             continue;
         }
         if (connect_) {
             int ret = zmq_connect(sock_, sadd[j].ep);
-            if (verbose_)
-                fprintf(stderr, "Socket connected to [%s]: %d\n",
-                        sadd[j].ep, ret);
+            if (verbose_) {
+                fprintf(stderr, "Socket connected to [%s]: %d", sadd[j].ep, ret);
+                if (ret < 0)
+                    fprintf(stderr, " (%d)", errno);
+                fprintf(stderr, "\n");
+            }
             continue;
         }
     }
@@ -342,6 +381,8 @@ void zc_zmq_run(void)
         ++count;
         if (iterations_ > 0 &&
             count > iterations_) {
+            if (verbose_)
+                fprintf(stderr, "Reached %d iterations, aborting\n", iterations_);
             break;
         }
         if (stype_ == ZMQ_REQ) {
@@ -360,6 +401,8 @@ void zc_zmq_run(void)
             break;
         }
     }
+
+    zc_zmq_cleanup();
 }
 
 void zc_zmq_debug(void)
@@ -416,57 +459,108 @@ static int zc_zmq_is_valid(void)
 
 static void zc_zmq_do_read(void)
 {
-    char buf[MAX_BUF];
+    zmq_msg_t msg;
     int n;
 
     if (! goon_)
         return;
 
-    n = zmq_recv(sock_, buf, MAX_BUF, 0);
+    n = zmq_msg_init(&msg);
     if (n < 0) {
+        if (verbose_)
+            fprintf(stderr, "Message init returned %d (%d), aborting\n",
+                    n, errno);
         goon_ = 0;
         return;
     }
-    if (verbose_)
-        fprintf(stderr, "Read %d:[%*.*s]\n", n, n, n, buf);
 
-    fwrite(buf, 1, n, stdout);
+    n = ZMQ_RECV(sock_, &msg, 0);
+    if (n < 0) {
+        if (verbose_)
+            fprintf(stderr, "Receive returned %d (%d), aborting\n",
+                    n, errno);
+        zmq_msg_close(&msg);
+        goon_ = 0;
+        return;
+    }
+
+    void* p = zmq_msg_data(&msg);
+    if (verbose_)
+        fprintf(stderr, "Received %d:%p:[%*.*s]\n",
+                n, p, n, n, (char*) p);
+    fwrite(p, 1, n, stdout);
     fputc(DELIMITER_NEWLINE, stdout);
+    zmq_msg_close(&msg);
+}
+
+static void zc_zmq_free(void* buf, void* hint)
+{
+    int b = (int) hint;
+    if (verbose_)
+        fprintf(stderr, "Freeing buffer #%d:%p\n", b, buf);
+    buffer_free(b);
 }
 
 static void zc_zmq_do_write(void)
 {
-    char buf[MAX_BUF];
+    int b = 0;
+    char* data = 0;
     int eof = 0;
     int p = 0;
 
     if (! goon_)
         return;
 
+    b = buffer_alloc(&data);
+    if (b < 0 || data == 0) {
+        // BAD!!!
+        goon_ = 0;
+        return;
+    }
     while (1) {
         int c = fgetc(stdin);
         if (c == EOF) {
+            if (verbose_)
+                fprintf(stderr, "Found EOF\n");
             eof = 1;
             goon_ = 0;
             break;
         }
-        if (p >= MAX_BUF ||
+        if (p >= MAX_STR ||
             c == delimiter_) {
             break;
         }
-        buf[p++] = c;
+        data[p++] = c;
     }
 
-    if (p > 0 || ! eof) {
+    if (p > 0 || !eof) {
+        zmq_msg_t msg;
         int n;
-        buf[p] = '\0';
-        if (verbose_)
-            fprintf(stderr, "Sending %d:[%*.*s]\n", p, p, p, buf);
-        n = zmq_send(sock_, buf, p, 0);
-        if (n < 0 || n != p) {
+
+        n = zmq_msg_init_data(&msg, data, p, zc_zmq_free, (void*) b);
+        if (n < 0) {
+            if (verbose_)
+                fprintf(stderr, "Message init returned %d (%d), aborting\n",
+                        n, errno);
             goon_ = 0;
             return;
         }
+
+        if (verbose_)
+            fprintf(stderr, "Sending %d:#%d:%p:[%*.*s]\n",
+                    p, b, data, p, p, data);
+
+        n = ZMQ_SEND(sock_, &msg, 0);
+        if (n < 0) {
+            if (verbose_)
+                fprintf(stderr, "Send returned %d (%d), aborting\n",
+                        n, errno);
+            zmq_msg_close(&msg);
+            goon_ = 0;
+            return;
+        }
+
+        zmq_msg_close(&msg);
     }
 }
 
